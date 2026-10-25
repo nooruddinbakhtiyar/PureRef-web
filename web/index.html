@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PureRef Web</title>
+  <meta name="description" content="Turn folders of images into organised PureRef .pur boards, or get the images back out of a .pur file. Runs in your browser: no Python, no uploads.">
+  <meta name="color-scheme" content="light dark">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='2' y='2' width='17' height='12' rx='2' fill='%232f6fed'/%3E%3Crect x='21' y='2' width='9' height='12' rx='2' fill='%2378a0f5'/%3E%3Crect x='2' y='16' width='9' height='14' rx='2' fill='%2378a0f5'/%3E%3Crect x='13' y='16' width='17' height='14' rx='2' fill='%232f6fed'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap">
+      <h1>
+        <svg class="logo" viewBox="0 0 32 32" aria-hidden="true">
+          <rect x="2" y="2" width="17" height="12" rx="2" />
+          <rect x="21" y="2" width="9" height="12" rx="2" class="alt" />
+          <rect x="2" y="16" width="9" height="14" rx="2" class="alt" />
+          <rect x="13" y="16" width="17" height="14" rx="2" />
+        </svg>
+        PureRef Web
+      </h1>
+      <p class="tagline">Turn folders of images into organised PureRef boards, right in your browser. Nothing is uploaded and you don't need Python.</p>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <div class="tabs" role="tablist" aria-label="Mode">
+      <button type="button" role="tab" id="tab-create" aria-controls="panel-create" aria-selected="true">Images → .pur</button>
+      <button type="button" role="tab" id="tab-extract" aria-controls="panel-extract" aria-selected="false" tabindex="-1">.pur → images</button>
+    </div>
+
+    <section id="panel-create" role="tabpanel" aria-labelledby="tab-create">
+      <div class="dropzone" id="create-drop">
+        <svg class="drop-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /><path d="M12 10v6M9 13l3-3 3 3" /></svg>
+        <p class="drop-title">Drop folders or images here</p>
+        <p class="drop-hint">Each folder becomes its own .pur file.</p>
+        <div class="drop-actions">
+          <button type="button" class="button primary" id="pick-folder-button">Choose a folder</button>
+          <button type="button" class="button" id="pick-files-button">Choose images</button>
+        </div>
+        <input type="file" id="pick-folder" webkitdirectory multiple hidden>
+        <input type="file" id="pick-files" accept="image/*" multiple hidden>
+      </div>
+
+      <p id="create-error" class="error" role="alert" hidden></p>
+
+      <div id="boards" class="card" hidden>
+        <div class="card-head">
+          <div>
+            <h2>Boards to create</h2>
+            <p class="muted">Click a name to rename it.</p>
+          </div>
+          <fieldset class="segmented">
+            <legend class="visually-hidden">Grouping</legend>
+            <label><input type="radio" name="grouping" value="folder" checked><span>One per folder</span></label>
+            <label><input type="radio" name="grouping" value="single"><span>All in one</span></label>
+          </fieldset>
+        </div>
+        <ul id="board-list" class="board-list"></ul>
+        <p id="ignored" class="note" hidden></p>
+        <div class="card-actions">
+          <button type="button" class="button ghost" id="clear-button">Clear</button>
+          <button type="button" class="button primary" id="create-button">Create</button>
+        </div>
+      </div>
+
+      <div id="progress" class="card progress" hidden>
+        <div class="progress-row">
+          <div class="progress-bar" role="progressbar" aria-label="Progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="progress-fill"></div></div>
+          <button type="button" class="button ghost small" id="cancel-button">Stop</button>
+        </div>
+        <p id="progress-text" class="progress-text" aria-live="polite"></p>
+      </div>
+
+      <div id="results" hidden>
+        <div class="section-head">
+          <h2>Your .pur files</h2>
+          <div class="section-actions">
+            <button type="button" class="button ghost" id="clear-results-button">Clear</button>
+            <button type="button" class="button primary" id="download-all-button">Download all (.zip)</button>
+          </div>
+        </div>
+        <ul id="result-list" class="result-list"></ul>
+        <details id="skipped" class="note-box" hidden>
+          <summary></summary>
+          <ul></ul>
+        </details>
+      </div>
+    </section>
+
+    <section id="panel-extract" role="tabpanel" aria-labelledby="tab-extract" hidden>
+      <div class="dropzone" id="extract-drop">
+        <svg class="drop-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="m3 16 5-5 4 4 3-3 6 6" /><circle cx="15.5" cy="8.5" r="1.5" /></svg>
+        <p class="drop-title">Drop a .pur file here</p>
+        <p class="drop-hint">Get all the images back out of a PureRef board.</p>
+        <div class="drop-actions">
+          <button type="button" class="button primary" id="pick-pur-button">Choose a .pur file</button>
+        </div>
+        <input type="file" id="pick-pur" accept=".pur" hidden>
+      </div>
+
+      <p id="extract-error" class="error" role="alert" hidden></p>
+
+      <div id="extract-result" hidden>
+        <div class="section-head">
+          <div>
+            <h2 id="extract-name"></h2>
+            <p id="extract-summary" class="muted"></p>
+          </div>
+          <div class="section-actions">
+            <button type="button" class="button primary" id="extract-download-button">Download images (.zip)</button>
+          </div>
+        </div>
+        <ul id="extract-grid" class="image-grid"></ul>
+        <p id="extract-more" class="note" hidden></p>
+      </div>
+    </section>
+
+    <section class="about">
+      <h2>How it works</h2>
+      <ul>
+        <li><strong>Private.</strong> Everything happens on your computer, in this browser tab. Your images are never uploaded.</li>
+        <li><strong>Ordered.</strong> Images are sorted by file name in natural order (2.jpg comes before 10.jpg), so number your files to control the order.</li>
+        <li><strong>Organised.</strong> Every image gets the same height, then the rows are balanced into a neat rectangle: the same layout as the original Python script.</li>
+        <li><strong>Compatible.</strong> Files are saved in the PureRef 1.10 format, which PureRef 1.10 and 1.11 open. Any image your browser can display works: JPG, PNG, WebP, GIF, BMP, AVIF.</li>
+      </ul>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap">
+      Based on <a href="https://github.com/FyorDev/PureRef-format">PureRef-format</a> by Fyor. Not affiliated with PureRef.
+    </div>
+  </footer>
+
+  <script src="js/purformat.js"></script>
+  <script src="js/pureref_gen.js"></script>
+  <script src="js/zip.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
