@@ -14,8 +14,10 @@
  * the end of the file. The rest of the database is at its usual place, so the database is
  * file[databaseStart:] + file[headerLength:databaseStart].
  *
- * Tables used here: images (the original image files), items (name of every item on the board),
- * items_images (which image an item shows) and items_notes (text notes).
+ * Tables used here: images (the original image files), items (every item on the board: name, parent,
+ * z order, opacity and transform), items_images (which image an item shows, how the image sits in the item
+ * and its crop shape) and items_notes (text notes). Transforms and crop shapes are QVariants (QTransform,
+ * QPainterPath) written with QDataStream and stored as text with one character per byte.
  *
  * Works as a plain <script> (exposes `PureRef2` on window) or as a CommonJS module (Node, for tests).
  */
@@ -35,6 +37,109 @@
     ["tif", "image/tiff", [0x49, 0x49, 0x2a, 0x00]],
     ["tif", "image/tiff", [0x4d, 0x4d, 0x00, 0x2a]],
   ];
+
+  const QT_TRANSFORM = 80; // QMetaType::QTransform in Qt 5
+  const IDENTITY = [1, 0, 0, 1, 0, 0];
+
+  // TEXT columns hold one byte per character, BLOB columns hold the bytes themselves
+  function qtBytes(value) {
+    if (value instanceof Uint8Array) return value;
+    if (typeof value !== "string") return null;
+    const bytes = new Uint8Array(value.length);
+    for (let i = 0; i < value.length; i++) {
+      const code = value.charCodeAt(i);
+      if (code > 0xff) return null;
+      bytes[i] = code;
+    }
+    return bytes;
+  }
+
+  // A QVariant: u32 type, u8 null flag, the type name for user types, then the value
+  function readVariant(value) {
+    const bytes = qtBytes(value);
+    if (!bytes || bytes.length < 5) return null;
+    const data = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const type = data.getUint32(0);
+    let pos = 5;
+    let name = "";
+    if (type >= 1024) {
+      if (bytes.length < pos + 4) return null;
+      const length = data.getUint32(pos);
+      pos += 4;
+      if (bytes.length < pos + length) return null;
+      name = String.fromCharCode(...bytes.subarray(pos, pos + length)).replace(/\0+$/, "");
+      pos += length;
+    }
+    return { type, name, data: new DataView(bytes.buffer, bytes.byteOffset + pos, bytes.byteLength - pos) };
+  }
+
+  // A QTransform as [m11, m12, m21, m22, dx, dy], the order canvas transforms use
+  function readTransform(value) {
+    const variant = readVariant(value);
+    if (!variant || variant.type !== QT_TRANSFORM || variant.data.byteLength < 72) return IDENTITY;
+    const m = Array.from({ length: 9 }, (_, i) => variant.data.getFloat64(i * 8));
+    const transform = [m[0], m[1], m[3], m[4], m[6], m[7]];
+    return transform.every(Number.isFinite) ? transform : IDENTITY;
+  }
+
+  // A QPainterPath as [[type, x, y], ...]: type 0 moves, 1 draws a line, 2 and two 3s make a curve
+  function readPath(value) {
+    const variant = readVariant(value);
+    if (!variant || variant.name !== "QPainterPath" || variant.data.byteLength < 4) return null;
+    const count = variant.data.getUint32(0);
+    if (count === 0 || variant.data.byteLength < 4 + count * 20) return null;
+    const elements = [];
+    for (let i = 0; i < count; i++) {
+      const at = 4 + i * 20;
+      elements.push([variant.data.getInt32(at), variant.data.getFloat64(at + 4), variant.data.getFloat64(at + 12)]);
+    }
+    return elements.every(([, x, y]) => Number.isFinite(x) && Number.isFinite(y)) ? elements : null;
+  }
+
+  // Apply transform a, then b
+  function multiply(a, b) {
+    return [
+      b[0] * a[0] + b[2] * a[1],
+      b[1] * a[0] + b[3] * a[1],
+      b[0] * a[2] + b[2] * a[3],
+      b[1] * a[2] + b[3] * a[3],
+      b[0] * a[4] + b[2] * a[5] + b[4],
+      b[1] * a[4] + b[3] * a[5] + b[5],
+    ];
+  }
+
+  // The image items on the board in drawing order, with their transforms on the board
+  function boardItems(itemRows, placements, imageIds) {
+    const byId = new Map(itemRows.map((item) => [item.id, item]));
+    const children = new Map();
+    for (const item of itemRows) {
+      const parent = item.parent !== item.id && byId.has(item.parent) ? item.parent : null;
+      if (!children.has(parent)) children.set(parent, []);
+      children.get(parent).push(item);
+    }
+    const byZ = (a, b) => (Number(a.z) || 0) - (Number(b.z) || 0) || a.id - b.id;
+    const placementsById = new Map(placements.map((placement) => [placement.id, placement]));
+
+    // Like Qt, children use their parent's coordinates and are drawn after it
+    const items = [];
+    const visit = (item, parentTransform, parentOpacity) => {
+      const transform = multiply(readTransform(item.transform), parentTransform);
+      const opacity = parentOpacity * (typeof item.opacity === "number" ? item.opacity : 1);
+      const placement = placementsById.get(item.id);
+      if (placement && imageIds.has(placement.image)) {
+        items.push({
+          image: placement.image,
+          transform,
+          imageTransform: readTransform(placement.image_transform),
+          clip: readPath(placement.image_bounds),
+          opacity,
+        });
+      }
+      (children.get(item.id) || []).sort(byZ).forEach((child) => visit(child, transform, opacity));
+    };
+    (children.get(null) || []).sort(byZ).forEach((item) => visit(item, IDENTITY, 1));
+    return items;
+  }
 
   // The first QString of a .pur file, which is the format version ("1.10", "2.1", ...), or null
   function formatVersion(input) {
@@ -122,7 +227,8 @@
     if (!/^2\./.test(header.version)) throw new Error("This is not a PureRef 2 file");
     const database = openDatabase(bytes, header);
 
-    const itemNames = new Map(database.rows("items").map((item) => [item.id, item.name]));
+    const itemRows = database.rows("items");
+    const itemNames = new Map(itemRows.map((item) => [item.id, item.name]));
     const placements = database.rows("items_images");
     const imageNames = new Map();
     for (const placement of placements) {
@@ -152,8 +258,10 @@
       applicationVersion: header.applicationVersion,
       thumbnail: header.thumbnail.length > 0 ? header.thumbnail : null,
       images,
+      items: boardItems(itemRows, placements, new Set(images.map((image) => image.id))),
       placements: placements.length,
       notes,
+      drawings: database.rows("items_drawings").length,
     };
   }
 
