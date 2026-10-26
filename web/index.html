@@ -94,7 +94,7 @@
       <div class="dropzone" id="extract-drop">
         <svg class="drop-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="m3 16 5-5 4 4 3-3 6 6" /><circle cx="15.5" cy="8.5" r="1.5" /></svg>
         <p class="drop-title">Drop a .pur file here</p>
-        <p class="drop-hint">Get all the images back out of a PureRef board, from PureRef 1.10 up to PureRef 2.</p>
+        <p class="drop-hint">Save a PureRef board as one image, or get its images back out. Works with PureRef 1.10 up to PureRef 2.</p>
         <div class="drop-actions">
           <button type="button" class="button primary" id="pick-pur-button">Choose a .pur file</button>
         </div>
@@ -104,16 +104,29 @@
       <p id="extract-error" class="error" role="alert" hidden></p>
 
       <div id="extract-result" hidden>
-        <div class="section-head">
-          <div>
-            <h2 id="extract-name"></h2>
-            <p id="extract-summary" class="muted"></p>
-          </div>
-          <div class="section-actions">
-            <button type="button" class="button primary" id="extract-download-button">Download images (.zip)</button>
+        <h2 id="extract-name"></h2>
+        <p id="extract-summary" class="muted"></p>
+
+        <div id="board-card" class="card board-card">
+          <div id="board-preview" class="board-preview" role="img" aria-label="The whole board"></div>
+          <p id="board-status" class="note" aria-live="polite" hidden></p>
+          <div class="board-actions">
+            <fieldset class="segmented">
+              <legend class="visually-hidden">Background</legend>
+              <label><input type="radio" name="background" value="dark" checked><span>Dark</span></label>
+              <label><input type="radio" name="background" value="white"><span>White</span></label>
+              <label><input type="radio" name="background" value="transparent"><span>Transparent</span></label>
+            </fieldset>
+            <button type="button" class="button primary" id="board-download-button">Download as one image</button>
           </div>
         </div>
-        <img id="extract-thumbnail" class="scene-thumbnail" alt="Thumbnail of the board, saved by PureRef" hidden>
+
+        <div class="section-head images-head">
+          <h2>Separate images</h2>
+          <div class="section-actions">
+            <button type="button" class="button" id="extract-download-button">Download all (.zip)</button>
+          </div>
+        </div>
         <ul id="extract-grid" class="image-grid"></ul>
         <p id="extract-more" class="note" hidden></p>
       </div>
@@ -125,7 +138,7 @@
         <li><strong>Private.</strong> Everything happens on your computer, in this browser tab. Your images are never uploaded.</li>
         <li><strong>Ordered.</strong> Images are sorted by file name in natural order (2.jpg comes before 10.jpg), so number your files to control the order.</li>
         <li><strong>Organised.</strong> Every image gets the same height, then the rows are balanced into a neat rectangle: the same layout as the original Python script.</li>
-        <li><strong>Compatible.</strong> New boards are saved in the PureRef 1.10 format, which PureRef 1.10, 1.11 and 2 all open. Images can come back out of files from any of them. Any image your browser can display works: JPG, PNG, WebP, GIF, BMP, AVIF.</li>
+        <li><strong>Compatible.</strong> New boards are saved in the PureRef 1.10 format, which PureRef 1.10, 1.11 and 2 all open. Boards from any of them can be saved as one image or split back into images. Any image your browser can display works: JPG, PNG, WebP, GIF, BMP, AVIF.</li>
       </ul>
     </section>
   </main>
@@ -139,6 +152,7 @@
   <script src="js/purformat.js"></script>
   <script src="js/sqlite.js"></script>
   <script src="js/pureref2.js"></script>
+  <script src="js/render.js"></script>
   <script src="js/pureref_gen.js"></script>
   <script src="js/zip.js"></script>
   <script src="js/app.js"></script>

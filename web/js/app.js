@@ -4,7 +4,7 @@
 (function () {
   "use strict";
 
-  const { PurFormat, PureRef2, PureRefGen, Zip } = window;
+  const { BoardRenderer, PurFormat, PureRef2, PureRefGen, Zip } = window;
   const $ = (id) => document.getElementById(id);
 
   const IMAGE_EXTENSION = /\.(jpe?g|jfif|pjpeg|pjp|png|apng|webp|gif|bmp|avif|ico|tiff?|heic|heif)$/i;
@@ -522,9 +522,16 @@
   // .pur → images
   ////////////////////////////////////////////////////////////////////////////////////////////////
 
-  let extracted = { urls: [], entries: [], zipName: "" };
+  let extracted = { urls: [], entries: [], zipName: "", name: "", board: null, undrawn: 0 };
+  let renderCount = 0;
 
-  // The images (with names and file types), notes and number of placements in a PureRef 1.x or 2.x file
+  const BACKGROUNDS = { dark: "#181818", white: "#ffffff", transparent: null }; // dark is PureRef's own
+  const background = () => document.querySelector('input[name="background"]:checked').value;
+  const boardOptions = () => ({ background: BACKGROUNDS[background()], padding: background() === "transparent" ? 0 : 0.02 });
+  const boardExtension = () => (background() === "transparent" ? "png" : "jpg");
+
+  // The images (with names and file types), notes, number of placements and the board for drawing it in one
+  // image, from a PureRef 1.x or 2.x file
   function readBoard(buffer) {
     const version = PureRef2.formatVersion(buffer);
 
@@ -539,8 +546,9 @@
         })),
         placements: scene.placements,
         notes: scene.notes,
-        thumbnail: scene.thumbnail,
         savedWith: `PureRef ${scene.applicationVersion || version}`,
+        board: { images: new Map(scene.images.map((image) => [image.id, image])), items: scene.items },
+        undrawn: scene.notes.length + scene.drawings,
       };
     }
 
@@ -549,14 +557,29 @@
     }
     const purFile = PurFormat.readPurFile(buffer);
     const images = [];
-    for (const image of purFile.images) {
-      if (image.pngBinary.length <= 4) continue; // a link to an image that isn't stored in the file
+    const board = { images: new Map(), items: [] };
+    purFile.images.forEach((image, index) => {
+      if (image.pngBinary.length <= 4) return; // a link to an image that isn't stored in the file
       const transform = image.transforms[0];
       let name = "";
       if (transform && transform.name && transform.name !== "image") name = transform.name;
       else if (transform && transform.source !== "BruteForceLoaded") name = transform.source;
       images.push({ name: withoutImageExtension(baseName(name)), extension: "png", mime: "image/png", data: image.pngBinary });
-    }
+
+      // The image's top left corner is at (xCrop, yCrop) and points is the crop shape, both in item coordinates
+      board.images.set(index, { data: image.pngBinary, mime: "image/png" });
+      for (const t of image.transforms) {
+        board.items.push({
+          image: index,
+          z: t.zLayer,
+          transform: [t.matrix[0], t.matrix[1], t.matrix[2], t.matrix[3], t.x, t.y],
+          imageTransform: [1, 0, 0, 1, t.xCrop, t.yCrop],
+          clip: t.points[0].map((x, i) => [i === 0 ? 0 : 1, x, t.points[1][i]]),
+          opacity: 1,
+        });
+      }
+    });
+    board.items.sort((a, b) => a.z - b.z);
 
     const notes = [];
     const collect = (text) => {
@@ -567,12 +590,43 @@
     purFile.images.forEach((image) => image.transforms.forEach((t) => t.textChildren.forEach(collect)));
 
     const placements = purFile.images.reduce((count, image) => count + image.transforms.length, 0);
-    return { images, placements, notes, thumbnail: null, savedWith: "" };
+    return { images, placements, notes, savedWith: "", board, undrawn: notes.length };
+  }
+
+  // Draw the board for the preview
+  async function drawBoardPreview() {
+    const count = ++renderCount;
+    const status = $("board-status");
+    status.hidden = false;
+    status.textContent = "Drawing the board…";
+    let result;
+    try {
+      result = await BoardRenderer.render(extracted.board, { ...boardOptions(), maxSide: 1600 });
+    } catch (error) {
+      if (count === renderCount) status.textContent = error.message;
+      return;
+    }
+    if (count !== renderCount) return; // another file or background was picked meanwhile
+
+    $("board-preview").replaceChildren(result.canvas);
+    const notes = [];
+    if (result.failed > 0) {
+      notes.push(`${plural(result.failed, "image")} couldn't be drawn because this browser can't open ${result.failed === 1 ? "its" : "their"} format.`);
+    }
+    if (extracted.undrawn > 0) notes.push("Text notes and drawings aren't included in the image.");
+    status.textContent = notes.join(" ");
+    status.hidden = notes.length === 0;
+  }
+
+  function updateBoardButton() {
+    $("board-download-button").textContent = `Download as one image (.${boardExtension()})`;
   }
 
   async function extract(file) {
     extracted.urls.forEach((url) => URL.revokeObjectURL(url));
-    extracted = { urls: [], entries: [], zipName: `${file.name.replace(/\.pur$/i, "")} images.zip` };
+    const name = file.name.replace(/\.pur$/i, "");
+    extracted = { urls: [], entries: [], zipName: `${name} images.zip`, name, board: null, undrawn: 0 };
+    renderCount++;
     showError("extract-error", "");
     $("extract-result").hidden = true;
 
@@ -606,13 +660,11 @@
     $("extract-summary").textContent = summary.join(" · ");
     $("extract-download-button").hidden = extracted.entries.length === 0;
 
-    const thumbnail = $("extract-thumbnail");
-    thumbnail.hidden = !board.thumbnail;
-    thumbnail.removeAttribute("src");
-    if (board.thumbnail) {
-      thumbnail.src = URL.createObjectURL(new Blob([board.thumbnail], { type: "image/jpeg" }));
-      extracted.urls.push(thumbnail.src);
-    }
+    extracted.board = board.board;
+    extracted.undrawn = board.undrawn;
+    $("board-card").hidden = board.board.items.length === 0;
+    $("board-preview").replaceChildren();
+    if (board.board.items.length > 0) drawBoardPreview();
 
     $("extract-grid").replaceChildren(...images.slice(0, EXTRACT_PREVIEW_LIMIT).map(({ name, data, mime }) => {
       const url = URL.createObjectURL(new Blob([data], { type: mime }));
@@ -641,6 +693,36 @@
   $("pick-pur").addEventListener("change", (event) => {
     if (event.target.files[0]) extract(event.target.files[0]);
     event.target.value = "";
+  });
+
+  document.querySelectorAll('input[name="background"]').forEach((radio) => radio.addEventListener("change", () => {
+    updateBoardButton();
+    if (extracted.board && extracted.board.items.length > 0) drawBoardPreview();
+  }));
+  updateBoardButton();
+
+  // Full size, or smaller when the browser can't make a canvas that big
+  $("board-download-button").addEventListener("click", (event) => {
+    withBusyButton(event.currentTarget, "Drawing…", async () => {
+      showError("extract-error", "");
+      const type = boardExtension() === "png" ? "image/png" : "image/jpeg";
+      const fileName = `${extracted.name}.${boardExtension()}`;
+      let lastError = null;
+      for (const maxSide of [8192, 4096, 2048]) {
+        try {
+          const { canvas } = await BoardRenderer.render(extracted.board, { ...boardOptions(), maxSide });
+          const blob = await new Promise((resolve) => canvas.toBlob(resolve, type, 0.92));
+          canvas.width = canvas.height = 0;
+          if (blob) {
+            downloadBlob(blob, fileName);
+            return;
+          }
+        } catch (error) {
+          lastError = error;
+        }
+      }
+      showError("extract-error", lastError ? lastError.message : "The board is too large to save as one image in this browser");
+    });
   });
 
   $("extract-download-button").addEventListener("click", (event) => {

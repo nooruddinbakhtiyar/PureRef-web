@@ -7,7 +7,7 @@ A Python script to automatically generate organised PureRef (1.10/1.11.1) .pur f
 
 The same generator, running entirely in your browser. Nothing is uploaded.
 - **Images → .pur:** drop folders (or pick a folder/images). Each folder becomes its own organised .pur file, or switch to "All in one" for a single board. Rename boards before creating them, then download them one by one or all at once as a .zip.
-- **.pur → images:** drop a .pur file to get all its images back out (plus any text notes) as a .zip. Works with files from PureRef 1.10, 1.11 and 2 (PureRef 2 files keep each image's original format).
+- **.pur → images:** drop a .pur file to save the whole board as one image (laid out as in PureRef, on a dark, white or transparent background), or to get all its images back out (plus any text notes) as a .zip. Works with files from PureRef 1.10, 1.11 and 2 (PureRef 2 files keep each image's original format).
 
 It produces the same files as the Python script, with a few differences:
 - Accepts any image your browser can open (JPG, PNG, WebP, GIF, BMP, AVIF...), not only .jpg/.jpeg/.png, and keeps transparency.
@@ -59,7 +59,7 @@ Already existing .pur files will be skipped, so delete them if you want to regen
 `pureref_gen_script.py` script to convert all folders (default Artists/) to .pur files (default Purs/)  
 `pureref_gen.py` module with a function to generate an organised PureRef .pur file from a folder of images  
 `purformat.py` module with a reader and writer for PureRef files, can be used to write your own converter 
-`web/` the web version: `js/purformat.js` (reader/writer), `js/pureref_gen.js` (layout), `js/pureref2.js` + `js/sqlite.js` (PureRef 2 reader), `js/app.js` (the page)
+`web/` the web version: `js/purformat.js` (reader/writer), `js/pureref_gen.js` (layout), `js/pureref2.js` + `js/sqlite.js` (PureRef 2 reader), `js/render.js` (draws a board as one image), `js/app.js` (the page)
 
 ### About
 I was inspired to create this after making an Artstation webscraper: https://github.com/FyorUU/Artstation-webscraper  

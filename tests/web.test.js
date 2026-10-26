@@ -12,6 +12,7 @@ const { spawnSync } = require("node:child_process");
 const PurFormat = require("../web/js/purformat.js");
 const PureRefGen = require("../web/js/pureref_gen.js");
 const PureRef2 = require("../web/js/pureref2.js");
+const BoardRenderer = require("../web/js/render.js");
 const SQLite = require("../web/js/sqlite.js");
 const Zip = require("../web/js/zip.js");
 
@@ -394,4 +395,74 @@ test("detects the .pur format version", async () => {
   assert.strictEqual(PureRef2.formatVersion(makePng(4, 4)), null);
   assert.strictEqual(PureRef2.formatVersion(new Uint8Array(2)), null);
   assert.throws(() => PureRef2.readScene(pur1), /not a PureRef 2 file/);
+});
+
+// PureRef 2 stores QVariants as text with one character per byte
+function qtTransform([a, b, c, d, e, f]) {
+  const bytes = Buffer.alloc(5 + 72);
+  bytes.writeUInt32BE(80, 0); // QTransform
+  [a, b, 0, c, d, 0, e, f, 1].forEach((value, i) => bytes.writeDoubleBE(value, 5 + i * 8));
+  return bytes.toString("latin1");
+}
+
+function qtPath(elements) {
+  const name = Buffer.from("QPainterPath\0", "latin1");
+  const head = Buffer.alloc(9);
+  head.writeUInt32BE(1024, 0); // user type, followed by its name
+  head.writeUInt32BE(name.length, 5);
+  const body = Buffer.alloc(4 + elements.length * 20 + 8);
+  body.writeUInt32BE(elements.length, 0);
+  elements.forEach(([type, x, y], i) => {
+    body.writeInt32BE(type, 4 + i * 20);
+    body.writeDoubleBE(x, 8 + i * 20);
+    body.writeDoubleBE(y, 16 + i * 20);
+  });
+  return Buffer.concat([head, name, body]).toString("latin1");
+}
+
+const rect = (w, h) => [[0, -w / 2, -h / 2], [1, w / 2, -h / 2], [1, w / 2, h / 2], [1, -w / 2, h / 2], [1, -w / 2, -h / 2]];
+const curvedClip = [[0, -5, -10], [1, 5, -10], [2, 8, 0], [3, 8, 5], [3, 5, 10], [1, -5, 10], [1, -5, -10]];
+
+function boardScene() {
+  const database = withDatabase((db) => {
+    db.exec(PUREREF2_SCHEMA);
+    const addImage = db.prepare("INSERT INTO images (width, height, data, format, id) VALUES (?, ?, ?, 'PNG', ?)");
+    addImage.run(40n, 30n, makePng(40, 30, 1), 0n);
+    addImage.run(10n, 20n, makePng(10, 20, 2), 1n);
+    const addItem = db.prepare("INSERT INTO items (z, opacity, parent, transform, name, id) VALUES (?, ?, ?, ?, ?, ?)");
+    const addPlacement = db.prepare("INSERT INTO items_images (image, image_transform, image_bounds, id) VALUES (?, ?, ?, ?)");
+    // Scaled and moved
+    addItem.run(2, 1.0, -1n, qtTransform([2, 0, 0, 2, 100, 50]), "big", 0n);
+    addPlacement.run(0n, qtTransform([1, 0, 0, 1, -20, -15]), qtPath(rect(40, 30)), 0n);
+    // A moved, half transparent group with a rotated, cropped image in it
+    addItem.run(1, 0.5, -1n, qtTransform([1, 0, 0, 1, 1000, 0]), "group", 1n);
+    addItem.run(0, 0.8, 1n, qtTransform([0, 1, -1, 0, 10, 20]), "rotated", 2n);
+    addPlacement.run(1n, qtTransform([1, 0, 0, 1, -5, -10]), qtPath(curvedClip), 2n);
+    // Damaged values fall back to no transform and no crop
+    addItem.run(3, 1.0, -1n, "not a transform", "plain", 3n);
+    addPlacement.run(1n, null, "garbage", 3n);
+  });
+  return PureRef2.readScene(makePur2(database, new Uint8Array([0xff, 0xd8, 0xff, 0xd9])));
+}
+
+test("reads where images are on a PureRef 2 board", { skip: noSqlite }, () => {
+  const scene = boardScene();
+  assert.deepStrictEqual(scene.items, [
+    { image: 1, transform: [0, 1, -1, 0, 1010, 20], imageTransform: [1, 0, 0, 1, -5, -10], clip: curvedClip, opacity: 0.4 },
+    { image: 0, transform: [2, 0, 0, 2, 100, 50], imageTransform: [1, 0, 0, 1, -20, -15], clip: rect(40, 30), opacity: 1 },
+    { image: 1, transform: [1, 0, 0, 1, 0, 0], imageTransform: [1, 0, 0, 1, 0, 0], clip: null, opacity: 1 },
+  ]);
+  assert.strictEqual(scene.drawings, 0);
+});
+
+test("works out the size of a board", { skip: noSqlite }, () => {
+  const scene = boardScene();
+  const board = { images: new Map(scene.images.map((image) => [image.id, image])), items: scene.items };
+  // The rotated image ends at x 1020, the plain one starts at 0,0 and the big one ends at y 80
+  assert.deepStrictEqual(BoardRenderer.layout(board), { x: 0, y: 0, width: 1020, height: 80, scale: 1 });
+  assert.deepStrictEqual(BoardRenderer.outputSize(BoardRenderer.layout(board), { maxSide: 510 }),
+    { width: 510, height: 40, scale: 0.5, offsetX: 0, offsetY: 0 });
+  const padded = BoardRenderer.outputSize(BoardRenderer.layout(board), { padding: 0.1 });
+  assert.deepStrictEqual([padded.width, padded.height, padded.offsetX, padded.offsetY], [1224, 284, 102, 102]);
+  assert.strictEqual(BoardRenderer.layout({ images: new Map(), items: [] }), null);
 });
