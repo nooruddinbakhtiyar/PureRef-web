@@ -41,6 +41,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: actions/configure-pages@v5
+      # Browsers cache each file for a while. Versioned links make an updated page load its own scripts and
+      # styles instead of cached ones from before the update.
+      - name: Version links to scripts and styles
+        run: |
+          sed -i -E "s#(src=\"js/[a-z0-9_]+\.js|href=\"style\.css)\"#\1?v=${GITHUB_SHA::8}\"#g" web/index.html
+          grep -E 'src="js/|href="style' web/index.html
       - uses: actions/upload-pages-artifact@v4
         with:
           path: web

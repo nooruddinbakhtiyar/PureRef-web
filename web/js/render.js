@@ -82,9 +82,15 @@
     context.closePath();
   }
 
+  // Resolves to { source, width, height, release }
   async function decode(image) {
     const blob = new Blob([image.data], { type: image.mime });
-    let bitmap = await createImageBitmap(blob, { imageOrientation: "from-image" });
+    let bitmap;
+    try {
+      bitmap = await createImageBitmap(blob, { imageOrientation: "from-image" });
+    } catch (error) {
+      return decodeWithImageElement(blob); // browsers that don't take these options, like older Safari
+    }
     // If PureRef didn't apply the photo's rotation, neither should we
     if (image.width && image.height && bitmap.width === image.height && bitmap.height === image.width && image.width !== image.height) {
       try {
@@ -95,7 +101,20 @@
         // Keep the rotated one
       }
     }
-    return bitmap;
+    return { source: bitmap, width: bitmap.width, height: bitmap.height, release: () => bitmap.close() };
+  }
+
+  async function decodeWithImageElement(blob) {
+    const url = URL.createObjectURL(blob);
+    const element = new Image();
+    element.src = url;
+    try {
+      await element.decode();
+    } catch (error) {
+      URL.revokeObjectURL(url);
+      throw error;
+    }
+    return { source: element, width: element.naturalWidth, height: element.naturalHeight, release: () => URL.revokeObjectURL(url) };
   }
 
   // Draw the board on a new canvas. Options: background (a CSS colour, or null for transparent),
@@ -121,9 +140,9 @@
       if (options.onProgress) options.onProgress(i, board.items.length);
       const item = board.items[i];
       const image = board.images.get(item.image);
-      let bitmap;
+      let decoded;
       try {
-        bitmap = await decode(image);
+        decoded = await decode(image);
       } catch (error) {
         failed++;
         continue;
@@ -139,9 +158,9 @@
       context.transform(...item.imageTransform);
       context.globalAlpha = item.opacity;
       context.imageSmoothingQuality = "high";
-      context.drawImage(bitmap, 0, 0, image.width || bitmap.width, image.height || bitmap.height);
+      context.drawImage(decoded.source, 0, 0, image.width || decoded.width, image.height || decoded.height);
       context.restore();
-      bitmap.close();
+      decoded.release();
     }
     return { canvas, failed };
   }

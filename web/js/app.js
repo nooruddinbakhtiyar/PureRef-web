@@ -623,6 +623,16 @@
   }
 
   async function extract(file) {
+    try {
+      await showBoard(file);
+    } catch (error) {
+      // Not a problem with the file, which showBoard reports itself
+      $("extract-result").hidden = true;
+      showError("extract-error", `Something went wrong while opening ${file.name} (${error.message}). Reloading the page may help.`);
+    }
+  }
+
+  async function showBoard(file) {
     extracted.urls.forEach((url) => URL.revokeObjectURL(url));
     const name = file.name.replace(/\.pur$/i, "");
     extracted = { urls: [], entries: [], zipName: `${name} images.zip`, name, board: null, undrawn: 0 };
