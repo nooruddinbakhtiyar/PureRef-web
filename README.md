@@ -1,6 +1,6 @@
 # PureRef-format  
 
-A Python script to automatically generate organised PureRef (1.10/1.11.1) .pur files from folders of images, and a module you can use to convert .pur files to/from any other file format.
+A Python script to automatically generate organised PureRef .pur files from folders of images, and a module you can use to convert .pur files to/from any other file format.
 
 ### Web version (no Python needed)
 **https://nooruddinbakhtiyar.github.io/PureRef-web/**
