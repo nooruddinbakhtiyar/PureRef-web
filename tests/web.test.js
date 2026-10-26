@@ -1,4 +1,4 @@
-// Tests for the web version. Run with: node --test tests/
+// Tests for the web version. Run with: node --test tests/*.test.js
 // The parity test compares against the Python generator and is skipped when Python/Pillow are missing.
 const test = require("node:test");
 const assert = require("node:assert");
@@ -11,6 +11,8 @@ const { spawnSync } = require("node:child_process");
 
 const PurFormat = require("../web/js/purformat.js");
 const PureRefGen = require("../web/js/pureref_gen.js");
+const PureRef2 = require("../web/js/pureref2.js");
+const SQLite = require("../web/js/sqlite.js");
 const Zip = require("../web/js/zip.js");
 
 const ROOT = path.join(__dirname, "..");
@@ -238,4 +240,158 @@ test("Python reads and rewrites JS files to identical bytes", { skip: !havePytho
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// PureRef 2 (SQLite). These build databases with node:sqlite and are skipped when it's not available.
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+let DatabaseSync = null;
+try {
+  ({ DatabaseSync } = require("node:sqlite"));
+} catch (error) {
+  // Node older than 22.5
+}
+const noSqlite = !DatabaseSync && "node:sqlite not available";
+
+function withDatabase(setup) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pureref-sqlite-"));
+  try {
+    const file = path.join(dir, "test.db");
+    const db = new DatabaseSync(file);
+    setup(db);
+    db.close();
+    return new Uint8Array(fs.readFileSync(file));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+const readAll = (bytes) => SQLite.open((offset, length) => bytes.subarray(offset, offset + length), bytes.length);
+const hex = (value) => (value instanceof Uint8Array ? Buffer.from(value).toString("hex") : value);
+const plain = (row) => Object.fromEntries(Object.entries(row).map(([key, value]) => [key, hex(value)]));
+
+for (const [pageSize, encoding] of [[512, "UTF-8"], [4096, "UTF-8"], [65536, "UTF-8"], [1024, "UTF-16le"], [4096, "UTF-16be"]]) {
+  test(`SQLite reader matches node:sqlite (${pageSize} byte pages, ${encoding})`, { skip: noSqlite }, () => {
+    const integers = [0, 1, -1, 127, -128, 255, 32767, -32768, 8388607, -8388608, 2 ** 31 - 1, -(2 ** 31), 2 ** 40, -(2 ** 40),
+      2 ** 47 - 1, -(2 ** 47), Number.MAX_SAFE_INTEGER, -Number.MAX_SAFE_INTEGER];
+    let expected;
+    const bytes = withDatabase((db) => {
+      db.exec(`PRAGMA page_size = ${pageSize}; PRAGMA encoding = '${encoding}';`);
+      db.exec('CREATE TABLE things (a INTEGER, "b c" TEXT, d BLOB, e REAL, f, id INTEGER PRIMARY KEY)');
+      db.exec("CREATE TABLE empty (x TEXT, y INTEGER PRIMARY KEY)");
+      const insert = db.prepare('INSERT INTO things (a, "b c", d, e, f, id) VALUES (?, ?, ?, ?, ?, ?)');
+      for (let i = 0; i < 400; i++) {
+        const blobSize = [0, 1, 100, pageSize - 40, pageSize * 3 + 17, 70000][i % 6];
+        insert.run(
+          i % 19 === 18 ? null : BigInt(integers[i % integers.length]),
+          i % 13 === 0 ? null : `row ${i} ünïcødé 🖼 `.repeat(1 + (i % 50)),
+          new Uint8Array(crypto.randomBytes(blobSize)),
+          i / 7,
+          i % 2 ? "loose" : 1.5,
+          BigInt(i * 3 + 1),
+        );
+      }
+      expected = db.prepare("SELECT * FROM things ORDER BY id").all().map(plain);
+    });
+
+    const db = readAll(bytes);
+    assert.deepStrictEqual(db.tables().sort(), ["empty", "things"]);
+    assert.deepStrictEqual(db.rows("things").map(plain), expected);
+    assert.deepStrictEqual(db.rows("empty"), []);
+    assert.deepStrictEqual(db.rows("missing"), []);
+  });
+}
+
+test("SQLite reader rejects other files", () => {
+  assert.throws(() => readAll(new Uint8Array(200)), /Not a SQLite database/);
+});
+
+// The tables of a PureRef 2.1 scene
+const PUREREF2_SCHEMA = `
+  CREATE TABLE items_groups (lock_mode INTEGER,background_color TEXT,id INTEGER PRIMARY KEY);
+  CREATE TABLE images (width INTEGER,source_type INTEGER,source TEXT,checksum TEXT,origin TEXT,data BLOB,format TEXT,height INTEGER,id INTEGER PRIMARY KEY);
+  CREATE TABLE metadata (last_save_path TEXT,last_load_checksum TEXT,thumbnail BLOB,saved INTEGER,vertical_scroll INTEGER,last_load_path TEXT,horizontal_scroll INTEGER,scene_rect TEXT,view_transform TEXT,application_version TEXT,id INTEGER PRIMARY KEY);
+  CREATE TABLE items (comment INTEGER,opacity REAL,z REAL,locked INTEGER,sort_order BLOB,parent INTEGER,transform BLOB,name TEXT,id INTEGER PRIMARY KEY);
+  CREATE TABLE items_drawings (strokes BLOB,id INTEGER PRIMARY KEY);
+  CREATE TABLE items_images (playback_frame INTEGER,playback_state INTEGER,flags INTEGER,image_bounds BLOB,playback_speed REAL,image_transform BLOB,image INTEGER,id INTEGER PRIMARY KEY);
+  CREATE TABLE items_notes (fixed_size TEXT,background_color TEXT,text TEXT,style INTEGER,text_color TEXT,id INTEGER PRIMARY KEY);
+`;
+
+// Wrap a database the way PureRef 2 does: header and thumbnail in front, the database bytes they replace at the end
+function makePur2(database, thumbnail) {
+  const qstring = (s) => {
+    const length = Buffer.alloc(4);
+    length.writeUInt32BE(s.length * 2);
+    return Buffer.concat([length, Buffer.from(s, "utf16le").swap16()]);
+  };
+  const numbers = Buffer.alloc(12);
+  numbers.writeBigUInt64BE(BigInt(database.length), 4);
+  const thumbnailLength = Buffer.alloc(4);
+  thumbnailLength.writeUInt32BE(thumbnail.length);
+  const beforeChecksum = Buffer.concat([qstring("2.1"), numbers, qstring("2.1.3")]);
+  const afterChecksum = Buffer.concat([thumbnailLength, thumbnail]);
+  const headerLength = beforeChecksum.length + 68 + afterChecksum.length;
+  const rest = Buffer.concat([afterChecksum, database.subarray(headerLength), database.subarray(0, headerLength)]);
+  const checksum = qstring(crypto.createHash("md5").update(rest).digest("hex"));
+  return new Uint8Array(Buffer.concat([beforeChecksum, checksum, rest]));
+}
+
+for (const thumbnailSize of [200, 10000]) {
+  test(`reads images and notes from a PureRef 2 scene (${thumbnailSize} byte thumbnail)`, { skip: noSqlite }, () => {
+    const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, ...crypto.randomBytes(3000), 0xff, 0xd9]);
+    const webp = new Uint8Array([...Buffer.from("RIFF"), 0, 0, 0, 0, ...Buffer.from("WEBPVP8 "), ...crypto.randomBytes(500)]);
+    const big = makePng(300, 300, 9);
+    const images = [
+      { data: makePng(40, 30, 1), format: "PNG", source: "/Users/someone/a.png" },
+      { data: big, format: "PNG", source: "/Users/someone/big picture.png" },
+      { data: jpeg, format: "JPG", source: "/Users/someone/photo.jpg" },
+      { data: webp, format: "WEBP", source: "C:\\Users\\someone\\no item.webp" },
+    ];
+    const thumbnail = new Uint8Array([0xff, 0xd8, 0xff, ...crypto.randomBytes(thumbnailSize - 3)]);
+
+    const database = withDatabase((db) => {
+      db.exec("PRAGMA page_size = 4096; PRAGMA auto_vacuum = 1; PRAGMA user_version = 200101; PRAGMA application_id = 940753918;");
+      db.exec(PUREREF2_SCHEMA);
+      const addImage = db.prepare("INSERT INTO images (width, source_type, source, checksum, origin, data, format, height, id) VALUES (10, 1, ?, ?, ?, ?, ?, 10, ?)");
+      images.forEach((image, id) => addImage.run(image.source, crypto.createHash("md5").update(image.data).digest("hex"), image.source, image.data, image.format, BigInt(id)));
+      const addItem = db.prepare("INSERT INTO items (opacity, z, locked, parent, name, id) VALUES (1.0, ?, 0, -1, ?, ?)");
+      const addPlacement = db.prepare("INSERT INTO items_images (playback_frame, playback_state, flags, playback_speed, image, id) VALUES (0, 0, 1, 1.0, ?, ?)");
+      [["first", 0], ["big picture", 1], ["photo", 2], ["photo copy", 2]].forEach(([name, image], id) => {
+        addItem.run(BigInt(id), name, BigInt(id));
+        addPlacement.run(BigInt(image), BigInt(id));
+      });
+      const addNote = db.prepare("INSERT INTO items_notes (text, style, id) VALUES (?, 0, ?)");
+      addNote.run("Hello from a note", 10n);
+      addNote.run("   ", 11n);
+      db.prepare("INSERT INTO metadata (thumbnail, application_version, id) VALUES (?, '2.1.3', 0)").run(thumbnail);
+    });
+    const file = makePur2(database, thumbnail);
+
+    assert.strictEqual(PureRef2.formatVersion(file), "2.1");
+    const scene = PureRef2.readScene(file);
+    assert.strictEqual(scene.applicationVersion, "2.1.3");
+    assert.deepStrictEqual(scene.thumbnail, thumbnail);
+    assert.strictEqual(scene.placements, 4);
+    assert.deepStrictEqual(scene.notes, ["Hello from a note"]);
+    assert.deepStrictEqual(scene.images.map((image) => [image.name, image.extension, image.mime]), [
+      ["first", "png", "image/png"],
+      ["big picture", "png", "image/png"],
+      ["photo", "jpg", "image/jpeg"],
+      ["", "webp", "image/webp"],
+    ]);
+    scene.images.forEach((image, i) => {
+      assert.deepStrictEqual(image.data, images[i].data);
+      assert.strictEqual(image.source, images[i].source);
+      assert.strictEqual(crypto.createHash("md5").update(image.data).digest("hex"), image.checksum);
+    });
+  });
+}
+
+test("detects the .pur format version", async () => {
+  const pur1 = await bytesOf(await PurFormat.writePurFile(sampleFile()));
+  assert.strictEqual(PureRef2.formatVersion(pur1), "1.10");
+  assert.strictEqual(PureRef2.formatVersion(makePng(4, 4)), null);
+  assert.strictEqual(PureRef2.formatVersion(new Uint8Array(2)), null);
+  assert.throws(() => PureRef2.readScene(pur1), /not a PureRef 2 file/);
 });

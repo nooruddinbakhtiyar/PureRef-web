@@ -4,7 +4,7 @@
 (function () {
   "use strict";
 
-  const { PurFormat, PureRefGen, Zip } = window;
+  const { PurFormat, PureRef2, PureRefGen, Zip } = window;
   const $ = (id) => document.getElementById(id);
 
   const IMAGE_EXTENSION = /\.(jpe?g|jfif|pjpeg|pjp|png|apng|webp|gif|bmp|avif|ico|tiff?|heic|heif)$/i;
@@ -524,21 +524,30 @@
 
   let extracted = { urls: [], entries: [], zipName: "" };
 
-  async function extract(file) {
-    extracted.urls.forEach((url) => URL.revokeObjectURL(url));
-    extracted = { urls: [], entries: [], zipName: `${file.name.replace(/\.pur$/i, "")} images.zip` };
-    showError("extract-error", "");
-    $("extract-result").hidden = true;
+  // The images (with names and file types), notes and number of placements in a PureRef 1.x or 2.x file
+  function readBoard(buffer) {
+    const version = PureRef2.formatVersion(buffer);
 
-    let purFile;
-    try {
-      purFile = PurFormat.readPurFile(await file.arrayBuffer());
-    } catch (error) {
-      showError("extract-error", `Couldn't read ${file.name}: ${error.message}`);
-      return;
+    if (version && /^2\./.test(version)) {
+      const scene = PureRef2.readScene(buffer);
+      return {
+        images: scene.images.map((image) => ({
+          name: image.name || withoutImageExtension(baseName(image.source)),
+          extension: image.extension,
+          mime: image.mime,
+          data: image.data,
+        })),
+        placements: scene.placements,
+        notes: scene.notes,
+        thumbnail: scene.thumbnail,
+        savedWith: `PureRef ${scene.applicationVersion || version}`,
+      };
     }
 
-    const used = new Set();
+    if (version !== "1.10") {
+      throw new Error("This isn't a PureRef file this site can read. It reads files from PureRef 1.10, 1.11 and 2.");
+    }
+    const purFile = PurFormat.readPurFile(buffer);
     const images = [];
     for (const image of purFile.images) {
       if (image.pngBinary.length <= 4) continue; // a link to an image that isn't stored in the file
@@ -546,8 +555,7 @@
       let name = "";
       if (transform && transform.name && transform.name !== "image") name = transform.name;
       else if (transform && transform.source !== "BruteForceLoaded") name = transform.source;
-      name = safeFileName(withoutImageExtension(baseName(name)), `image ${images.length + 1}`);
-      images.push({ name: uniqueName(name, used, ".png"), data: image.pngBinary });
+      images.push({ name: withoutImageExtension(baseName(name)), extension: "png", mime: "image/png", data: image.pngBinary });
     }
 
     const notes = [];
@@ -558,22 +566,56 @@
     purFile.text.forEach(collect);
     purFile.images.forEach((image) => image.transforms.forEach((t) => t.textChildren.forEach(collect)));
 
-    extracted.entries = [...images];
+    const placements = purFile.images.reduce((count, image) => count + image.transforms.length, 0);
+    return { images, placements, notes, thumbnail: null, savedWith: "" };
+  }
+
+  async function extract(file) {
+    extracted.urls.forEach((url) => URL.revokeObjectURL(url));
+    extracted = { urls: [], entries: [], zipName: `${file.name.replace(/\.pur$/i, "")} images.zip` };
+    showError("extract-error", "");
+    $("extract-result").hidden = true;
+
+    let board;
+    try {
+      board = readBoard(await file.arrayBuffer());
+    } catch (error) {
+      showError("extract-error", `Couldn't read ${file.name}: ${error.message}`);
+      return;
+    }
+
+    const used = new Set();
+    const images = board.images.map((image, i) => ({
+      name: uniqueName(safeFileName(image.name, `image ${i + 1}`), used, `.${image.extension}`),
+      data: image.data,
+      mime: image.mime,
+    }));
+    const notes = board.notes;
+
+    extracted.entries = images.map(({ name, data }) => ({ name, data }));
     if (notes.length > 0) {
       extracted.entries.push({ name: uniqueName("notes", used, ".txt"), data: new TextEncoder().encode(`${notes.join("\n\n")}\n`) });
     }
 
-    const placements = purFile.images.reduce((count, image) => count + image.transforms.length, 0);
     const summary = [images.length > 0 ? plural(images.length, "image") : "No images"];
-    if (placements > images.length) summary.push(`${placements} on the board`);
+    if (board.placements > images.length) summary.push(`${board.placements} on the board`);
     if (notes.length > 0) summary.push(plural(notes.length, "text note"));
+    if (board.savedWith) summary.push(`saved with ${board.savedWith}`);
     summary.push(formatBytes(file.size));
     $("extract-name").textContent = file.name;
     $("extract-summary").textContent = summary.join(" · ");
     $("extract-download-button").hidden = extracted.entries.length === 0;
 
-    $("extract-grid").replaceChildren(...images.slice(0, EXTRACT_PREVIEW_LIMIT).map(({ name, data }) => {
-      const url = URL.createObjectURL(new Blob([data], { type: "image/png" }));
+    const thumbnail = $("extract-thumbnail");
+    thumbnail.hidden = !board.thumbnail;
+    thumbnail.removeAttribute("src");
+    if (board.thumbnail) {
+      thumbnail.src = URL.createObjectURL(new Blob([board.thumbnail], { type: "image/jpeg" }));
+      extracted.urls.push(thumbnail.src);
+    }
+
+    $("extract-grid").replaceChildren(...images.slice(0, EXTRACT_PREVIEW_LIMIT).map(({ name, data, mime }) => {
+      const url = URL.createObjectURL(new Blob([data], { type: mime }));
       extracted.urls.push(url);
       const item = element("li");
       const link = element("a");
